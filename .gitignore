@@ -1,0 +1,16 @@
+# Build output (Makefile)
+build/
+
+# Build output (MounRiver Studio 2 managed build)
+obj/
+
+# Objects
+*.o
+*.d
+
+# Editor / tooling
+.mrs/
+.claude/
+.vscode/
+.settings/
+.DS_Store
