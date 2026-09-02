@@ -27,14 +27,17 @@
 #include "grbl/hal.h"
 #include "grbl/state_machine.h"
 #include "grbl/stream.h"
+#include "grbl/task.h"
+#include "grbl/machine_limits.h"
 
 // Step pulse timer (TIM3) runs at full timer clock.
 #define PULSE_TICKS_PER_US (TIMER_CLOCK_HZ / 1000000UL)                       // 144
 #define STEP_TICKS_PER_US  (TIMER_CLOCK_HZ / STEPPER_TIMER_DIV / 1000000UL)   // 18
 
-// Interrupt latency compensation for the step pulse width, in microseconds.
-// TODO: calibrate on a scope (deliverable 3, together with PFIC priorities).
-#define STEP_PULSE_LATENCY_US 0.8f
+// Interrupt latency compensation for the step pulse width, in microseconds:
+// TIM3 update to step pins reset (VTF entry + HPE + handler body).
+// Estimated ~0.5 us at 144 MHz, TODO: verify on a scope.
+#define STEP_PULSE_LATENCY_US 0.5f
 
 // Pin bit masks
 
@@ -366,6 +369,10 @@ static limit_signals_t limitsGetState (void)
     return signals;
 }
 
+// EXTI lines currently wanted enabled by the core (limitsEnable). A line
+// disabled for debouncing is only re-armed if it is still in this mask.
+static volatile uint32_t limits_irq_mask = 0;
+
 // Enable/disable limit switch interrupts. Switches used as homing source
 // are polled by the homing cycle and get their interrupt disabled.
 static void limitsEnable (bool on, axes_signals_t homing_cycle)
@@ -381,6 +388,7 @@ static void limitsEnable (bool on, axes_signals_t homing_cycle)
     }
 
     __disable_irq();
+    limits_irq_mask = enable;
     EXTI->INTENR = (EXTI->INTENR & ~(uint32_t)LIMIT_MASK) | enable;
     __enable_irq();
 
@@ -388,10 +396,35 @@ static void limitsEnable (bool on, axes_signals_t homing_cycle)
         EXTI->INTFR = enable; // clear stale pending flags (write 1 to clear)
 }
 
+// Debounce: runs in the foreground LIMIT_DEBOUNCE_MS after the edge,
+// reports the switch if still active and re-arms the line.
+static void limit_debounce (void *data)
+{
+    uint32_t line_bit = (uint32_t)data;
+    limit_signals_t state = limitsGetState();
+
+    if(limit_signals_merge(state).value)
+        hal.limits.interrupt_callback(state);
+
+    __disable_irq();
+    EXTI->INTFR = line_bit;
+    if(limits_irq_mask & line_bit)
+        EXTI->INTENR |= line_bit;
+    __enable_irq();
+}
+
 static void limit_isr (uint32_t line_bit)
 {
     EXTI->INTFR = line_bit;
-    hal.limits.interrupt_callback(limitsGetState());
+
+    if(hal.driver_cap.software_debounce) {
+        EXTI->INTENR &= ~line_bit; // disarm until the debounce task ran
+        if(!task_add_delayed(limit_debounce, (void *)line_bit, LIMIT_DEBOUNCE_MS)) {
+            EXTI->INTENR |= line_bit;
+            hal.limits.interrupt_callback(limitsGetState());
+        }
+    } else
+        hal.limits.interrupt_callback(limitsGetState());
 }
 
 void EXTI0_IRQHandler (void) { limit_isr(1 << 0); }
@@ -523,6 +556,31 @@ static void settings_changed (settings_t *settings, settings_changed_flags_t cha
 }
 
 //
+// PFIC: nesting configuration and interrupt priorities (see driver.h)
+//
+
+static void pfic_init (void)
+{
+    // INTSYSCR: HWSTKEN | INESTEN | PMTCFG = 2 (4 preemption levels).
+    // Same value as the startup code, set explicitly so the driver does
+    // not depend on it.
+    __asm volatile ("csrw 0x804, %0" : : "r" (0x0b));
+
+    NVIC_SetPriority(STEPPER_TIMER_IRQn, STEPPER_TIMER_IRQ_PRIO);
+    NVIC_SetPriority(PULSE_TIMER_IRQn, PULSE_TIMER_IRQ_PRIO);
+    NVIC_SetPriority(EXTI0_IRQn, LIMITS_IRQ_PRIO);
+    NVIC_SetPriority(EXTI1_IRQn, LIMITS_IRQ_PRIO);
+    NVIC_SetPriority(EXTI2_IRQn, LIMITS_IRQ_PRIO);
+    NVIC_SetPriority(EXTI3_IRQn, LIMITS_IRQ_PRIO);
+    NVIC_SetPriority(EXTI4_IRQn, LIMITS_IRQ_PRIO);
+    NVIC_SetPriority(SysTicK_IRQn, SYSTICK_IRQ_PRIO);
+
+    // Time critical handlers bypass the vector table lookup (VTF).
+    SetVTFIRQ((uint32_t)TIM2_IRQHandler, STEPPER_TIMER_IRQn, VTF_CH_STEPPER, ENABLE);
+    SetVTFIRQ((uint32_t)TIM3_IRQHandler, PULSE_TIMER_IRQn, VTF_CH_PULSE, ENABLE);
+}
+
+//
 // driver_setup: configure MCU peripherals, called once after settings load
 //
 
@@ -531,7 +589,7 @@ static bool driver_setup (settings_t *settings)
     // Clocks
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_GPIOB | RCC_APB2Periph_GPIOC
                            | RCC_APB2Periph_GPIOD | RCC_APB2Periph_GPIOE | RCC_APB2Periph_AFIO, ENABLE);
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2 | RCC_APB1Periph_TIM3, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2 | RCC_APB1Periph_TIM3 | RCC_APB1Periph_TIM4, ENABLE);
 
     // Step + dir outputs (all on GPIOD)
     GPIO_InitTypeDef gpio = {
@@ -560,14 +618,17 @@ static bool driver_setup (settings_t *settings)
     PULSE_TIMER->INTFR = 0;
     PULSE_TIMER->DMAINTENR = TIM_UIE;
 
-    // Limit inputs on EXTI lines 0..4 (one vector each).
-    // NOTE: interrupt priorities and nesting are set up in deliverable 3;
-    // the stepper ISR (TIM2) must preempt everything else.
+    // Limit inputs on EXTI lines 0..4 (one vector each)
     GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource0);
     GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource1);
     GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource2);
     GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource3);
     GPIO_EXTILineConfig(GPIO_PortSourceGPIOE, GPIO_PinSource4);
+
+    // Servo PWM outputs (TIM4), exposed as aux analog outputs E0..E2
+    ioports_init_analog();
+
+    pfic_init();
 
     NVIC_EnableIRQ(STEPPER_TIMER_IRQn);
     NVIC_EnableIRQ(PULSE_TIMER_IRQn);
@@ -650,7 +711,7 @@ bool driver_init (void)
     hal.driver_cap.step_pulse_delay = On;
     hal.driver_cap.amass_level = 3;
     hal.driver_cap.limits_pull_up = On;
-    hal.driver_cap.software_debounce = Off;                 // TODO: revisit in deliverable 3
+    hal.driver_cap.software_debounce = On;                  // task based, LIMIT_DEBOUNCE_MS
 
     return hal.version == HAL_VERSION;
 }

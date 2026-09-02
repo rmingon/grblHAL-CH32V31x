@@ -36,12 +36,30 @@ hardware; the firmware intentionally provides no software control of either.
 
 - [x] Repository skeleton, reproducible cross-build, linking ELF
 - [x] `driver.c` / `driver.h`: grblHAL driver contract (stepper, limits, control inputs, coolant, spindle stub)
-- [ ] Timer and PFIC priority setup, nested interrupts with the stepper ISR at highest preemption level
+- [x] Timer and PFIC priority setup, nested interrupts with the stepper ISR at highest preemption level, servo PWM (TIM4) as aux analog outputs
 - [ ] `serial.c`: USART stream via `stream_connect()`, USB CDC if cheap
 - [ ] `nvs.c`: settings storage in flash (grblHAL NVS API)
 - [ ] `boards/pickomatic_map.h`: pin map
 - [ ] `my_machine.h`: board selection and build options
 - [ ] Ethernet / networking (phase 2)
+
+## Interrupts and timers
+
+| Resource | Use | PFIC preemption level |
+|----------|-----|-----------------------|
+| TIM2 | Main stepper interrupt, 16-bit, 18 MHz base, 3 prescaler banks | 0 (highest), VTF channel 0 |
+| TIM3 | Step pulse off, one-shot at 144 MHz | 1, VTF channel 1 |
+| EXTI0..4 | Endstops PE0..PE4, 40 ms software debounce | 1 |
+| TIM4 CH1..3 | Servo PWM 50 Hz on PB6..PB8 | none (no interrupt) |
+| SysTick | 1 ms tick, delays, elapsed time | 3 (lowest) |
+
+The QingKe V4F hardware stack (HPE) is 3 levels deep, so only three
+preemption levels are used and every handler runs as a WCH fast interrupt
+(no software register save/restore). Interrupts sharing a level never
+nest.
+
+Servos are grblHAL aux analog outputs `E0..E2`, value = pulse width in
+microseconds (`M67 E0 Q1500`, `M67 E0 Q0` releases the servo).
 
 ## Repository layout
 

@@ -106,7 +106,8 @@
 #define COOLANT_MIST_PORT   GPIOE
 #define COOLANT_MIST_PIN    6   // RELAY_2
 
-// Servo outputs, 50 Hz PWM on TIM4 (deliverable 3).
+// Servo outputs, 50 Hz PWM on TIM4, registered as aux analog outputs
+// E0..E2 (M67/M68, value = pulse width in microseconds).
 #define SERVO_PORT      GPIOB
 #define SERVO1_PIN      6   // TIM4 CH1
 #define SERVO2_PIN      7   // TIM4 CH2
