@@ -9,10 +9,10 @@ A [grblHAL](https://github.com/grblHAL) driver for the WCH **CH32V317**
 [PickOMatic V2](https://github.com/rmingon/PickOMatic-V2) pick-and-place
 motion controller.
 
-> **Status: work in progress.** The repository skeleton and the cross-build
-> are in place and produce a linking image. The driver itself (HAL
-> implementation, serial stream, settings storage, board map) is under
-> active development. Not ready for production use.
+> **Status: work in progress.** The grblHAL core builds and links with a
+> working driver (steppers, limits, relay outputs). Serial stream,
+> settings storage and interrupt priority tuning are still to come.
+> Not ready for production use.
 
 ---
 
@@ -35,7 +35,7 @@ hardware; the firmware intentionally provides no software control of either.
 ## Roadmap
 
 - [x] Repository skeleton, reproducible cross-build, linking ELF
-- [ ] `driver.c` / `driver.h`: grblHAL driver contract (stepper, limits, control inputs, coolant, spindle stub)
+- [x] `driver.c` / `driver.h`: grblHAL driver contract (stepper, limits, control inputs, coolant, spindle stub)
 - [ ] Timer and PFIC priority setup, nested interrupts with the stepper ISR at highest preemption level
 - [ ] `serial.c`: USART stream via `stream_connect()`, USB CDC if cheap
 - [ ] `nvs.c`: settings storage in flash (grblHAL NVS API)

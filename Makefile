@@ -78,13 +78,16 @@ C_SRCS  = $(wildcard src/*.c)
 C_SRCS += lib/Core/core_riscv.c
 C_SRCS += lib/Debug/debug.c
 C_SRCS += $(wildcard lib/Peripheral/src/*.c)
-
-# grblHAL core (grbl/) is added with deliverable 2 (driver.c), together
-# with the boards/ include path.
+C_SRCS += $(wildcard grbl/*.c)
+C_SRCS += $(wildcard grbl/kinematics/*.c)
 
 S_SRCS  = lib/Startup/startup_ch32v30x_D8C.S
 
 INCLUDES = -I. -Isrc -Ilib/Core -Ilib/Debug -Ilib/Peripheral/inc
+
+# N_AXIS and build options must be visible to BOTH the grbl core and the
+# driver: force-include the configuration into every compilation unit.
+FORCED_INCLUDE = -include src/my_machine.h
 
 OBJS  = $(addprefix $(BUILD)/,$(C_SRCS:.c=.o))
 OBJS += $(addprefix $(BUILD)/,$(S_SRCS:.S=.o))
@@ -100,7 +103,7 @@ COMMON_FLAGS = -march=$(MARCH) -mabi=$(MABI) \
                -ffunction-sections -fdata-sections -fno-common \
                -Wunused -Wuninitialized
 
-CFLAGS  = $(COMMON_FLAGS) -std=gnu11 $(INCLUDES)
+CFLAGS  = $(COMMON_FLAGS) -std=gnu11 $(INCLUDES) $(FORCED_INCLUDE)
 ASFLAGS = $(COMMON_FLAGS) -x assembler-with-cpp $(INCLUDES)
 
 LDFLAGS = $(COMMON_FLAGS) -T ld/Link.ld -nostartfiles \

@@ -23,18 +23,13 @@
 
 #include "ch32v30x.h"
 
-/*
-  Deliverable 1: skeleton only.
-  grblmain() from grbl/grbllib.c takes over from here once the driver
-  (driver.c) is in place; for now just prove that clock setup, startup
-  code and the toolchain produce a running image.
-*/
+#include "grbl/grbllib.h"
 
 int main (void)
 {
     SystemCoreClockUpdate();
 
-    while(true) {
-        __NOP();
-    }
+    grbl_enter(); // never returns
+
+    return 0;
 }
